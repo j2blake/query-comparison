@@ -16,6 +16,16 @@ Compare the files
 Dump the unique queries to two new files.
 
 --------------------------------------------------------------------------------
+
+The line format:
+
+2015-05-29 17:30:01,474 INFO  [RDFServiceLogger]    0.001 sparqlSelectQuery [JSON, SELECT * WHERE {  <http://vivo.med.cornell.edu/individual/cwid-rgcryst> <http://www.w3.org/2000/01/rdf-schema#label> ?o }]
+
+Everything after the elapsed time is considered to be the querey string. So the
+"query string" includes "sparqlSelectQuery [JSON, <actual query> ] 
+
+--------------------------------------------------------------------------------
+
 The report
 
                 total      common       unique
@@ -26,6 +36,8 @@ outputs to report-filename1-filename2, diff-filename1-filename2 and diff-filenam
 
 --------------------------------------------------------------------------------
 =end
+
+require 'date'
 
 class UserInputError < StandardError
 end
@@ -45,32 +57,59 @@ module Kernel
 end
 
 # ---------------------------------------------------------
+# Helper classes
+# ---------------------------------------------------------
+
+class QueryRecord
+  PARSE_FORMAT = '%Y-%m-%d %H:%M:%S,%N'
+  PRINT_FORMAT = '%Y-%m-%d %H:%M:%S,%3N'
+  attr_reader :query_string
+  attr_reader :elapsed_time
+  attr_reader :time_of_day
+  
+  def initialize(query_string, elapsed_time_string, time_of_day_string)
+    @query_string = query_string
+    @elapsed_time = elapsed_time_string.to_f
+    @time_of_day = DateTime.strptime(time_of_day_string, PARSE_FORMAT)
+  end
+  
+  def to_s()
+    "#{time_of_day.strftime(PRINT_FORMAT)} #{sprintf("%8.3f", elapsed_time)} #{query_string}"
+  end
+end
+
+# ---------------------------------------------------------
 
 class Parser
   def self.parse(file)
     list = []
     File.open(file) do |f|
       f.each_line do |line|
-        if /.*\[RDFServiceLogger\]\s+(\S+)\s+(.*)$/ =~ line.chomp
-          list << [$2, $1.to_f]
+        if /(.{23}).*\[RDFServiceLogger\]\s+(\S+)\s+(.*)$/ =~ line.chomp
+          list << QueryRecord.new($3, $2, $1)
         end
       end
     end
-    list.sort{|a, b| a[0] <=> b[0]}
+    list.sort{|a, b| a.query_string <=> b.query_string}
   end
 end
 
+# ---------------------------------------------------------
+# Main class
 # ---------------------------------------------------------
 
 class Comparer
   def initialize(args)
     raise UserInputError.new("Usage: ruby comparer.rb filename1 filename2") unless args && args.size == 2
-    raise UserInputError.new("File not found: '#{args[0]}'") unless File.exist?(args[0])
-    raise UserInputError.new("File not found: '#{args[1]}'") unless File.exist?(args[1])
+    
     @file1 = File.expand_path(args[0])
     @file2 = File.expand_path(args[1])
+    raise UserInputError.new("File not found: '#{@file1}'") unless File.exist?(@file1)
+    raise UserInputError.new("File not found: '#{@file2}'") unless File.exist?(@file2)
+    
     @base1 = File.basename(@file1)
     @base2 = File.basename(@file2)
+    
     @report = File.expand_path("report-#{@base1}-#{@base2}")
     @diff1 = File.expand_path("diff-#{@base1}-#{@base2}")
     @diff2 = File.expand_path("diff-#{@base2}-#{@base1}")
@@ -88,11 +127,11 @@ class Comparer
 
     @unique2 = @list2[0..-1]
     @unique1 = @list1.select do |q1|
-      match_index = @unique2.index{|q2| q1[0] == q2[0]}
+      match_index = @unique2.index{|q2| q1.query_string == q2.query_string}
       if match_index
         @common_count += 1
-        @common_time_1 += q1[1]
-        @common_time_2 += @unique2[match_index][1]
+        @common_time_1 += q1.elapsed_time
+        @common_time_2 += @unique2[match_index].elapsed_time
         @unique2.delete_at(match_index)
         false
       else
@@ -104,18 +143,18 @@ class Comparer
   def dump_remainders()
     File.open(@diff1, 'w') do |f|
       @unique1.each do |q|
-        f.puts("#{q[1]} #{q[0]}")
+        f.puts("#{q}")
       end
     end
     File.open(@diff2, 'w') do |f|
       @unique2.each do |q|
-        f.puts("#{q[1]} #{q[0]}")
+        f.puts("#{q}")
       end
     end
   end
 
   def sum_times(list)
-    list.inject(0) { |sum, q| sum + q[1] }
+    list.inject(0) { |sum, q| sum + q.elapsed_time }
   end
 
   def report()
